@@ -527,3 +527,6 @@ def create_map(
         "status": m.status,
         "created_at": str(m.created_at)
     }
+
+from backend.routes.scrape import router as scrape_router
+app.include_router(scrape_router)
