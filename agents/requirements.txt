@@ -1,7 +1,0 @@
-# Member B offline/local agent requirements
-ollama
-sentence-transformers
-spacy
-chromadb
-requests
-python-dotenv
