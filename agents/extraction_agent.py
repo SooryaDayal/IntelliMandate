@@ -1,195 +1,343 @@
-"""Local MAP extraction agent using Ollama + Phi-3 Mini.
+"""
+IntelliMandate v3 — MAP Extraction Agent
+File: agents/extraction_agent.py
 
-Replaces Groq calls with local Ollama calls.
-Run from project root:
+June 15 Member B Task B-2-4
+No LLMs. Combines:
+1. obligation_extractor
+2. finbert_classifier
+3. entity_extractor
+4. MAP assembly
+5. validation
+6. deduplication
+7. optional MPI scoring
+
+Run:
     python -m agents.extraction_agent
-
-Before running:
-    ollama pull phi3:mini
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-import os
 import re
-import uuid
-from typing import Any, Dict, Iterable, List, Optional
+from datetime import date
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional
 
-import ollama
-import requests
-from sentence_transformers import SentenceTransformer
+from .entity_extractor import extract_entities, parse_money_to_rupees
+from .finbert_classifier import classify_sentences
+from .mpi_engine import score_maps_batch
+from .obligation_extractor import extract_obligation_sentences
 
-try:
-    from .prompts import MAP_EXTRACTION_PROMPT
-    from .mpi_engine import score_map
-except ImportError:  # allows python agents/extraction_agent.py too
-    from prompts import MAP_EXTRACTION_PROMPT
-    from mpi_engine import score_map
+REQUIRED_MAP_KEYS = [
+    "obligation_text",
+    "measurable_condition",
+    "deadline",
+    "penalty_exposure",
+    "evidence_required",
+    "regulatory_reference",
+    "map_type",
+]
 
-MODEL_NAME = os.getenv("OLLAMA_MODEL", "phi3:mini")
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-
-_embedding_model = None
-
-
-def get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    return _embedding_model
-
-
-def chunk_text(text: str, max_chars: int = 3500, overlap: int = 300) -> List[str]:
-    """Split long circular text into overlapping chunks."""
-    clean = re.sub(r"\s+", " ", text).strip()
-    if len(clean) <= max_chars:
-        return [clean]
-
-    chunks = []
-    start = 0
-    while start < len(clean):
-        end = min(start + max_chars, len(clean))
-        chunks.append(clean[start:end])
-        if end == len(clean):
-            break
-        start = max(0, end - overlap)
-    return chunks
+VALID_MAP_TYPES = {
+    "PROCESS_CHANGE",
+    "POLICY_UPDATE",
+    "SYSTEM_CHANGE",
+    "REPORTING_OBLIGATION",
+}
 
 
-def extract_json_from_response(content: str) -> Dict[str, Any]:
-    """Parse JSON even if model accidentally adds small extra text."""
-    content = content.strip()
-    try:
-        parsed = json.loads(content)
-        if isinstance(parsed, dict):
-            return parsed
-        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-            return parsed[0]
-    except json.JSONDecodeError:
-        pass
-
-    match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-    if not match:
-        raise ValueError(f"No JSON object found in model response: {content[:300]}")
-
-    parsed = json.loads(match.group(0))
-    if not isinstance(parsed, dict):
-        raise ValueError("Model response JSON was not an object.")
-    return parsed
+def infer_map_type(sentence: str) -> str:
+    lower = (sentence or "").lower()
+    if any(term in lower for term in ("upload", "system", "ckycr", "cic", "data", "portal", "automated")):
+        return "SYSTEM_CHANGE"
+    if any(term in lower for term in ("submit", "report", "return", "fiu", "acknowledgement", "compliance report")):
+        return "REPORTING_OBLIGATION"
+    if any(term in lower for term in ("policy", "direction", "master direction", "priority sector", "interest rate", "bsbda", "irac")):
+        return "POLICY_UPDATE"
+    return "PROCESS_CHANGE"
 
 
-def validate_map_fields(map_obj: Dict[str, Any]) -> Dict[str, Any]:
-    required_keys = [
-        "obligation_text",
-        "measurable_condition",
-        "deadline",
-        "penalty_exposure",
-        "evidence_required",
-        "regulatory_reference",
-        "map_type",
-    ]
-    cleaned = {}
-    for key in required_keys:
-        value = map_obj.get(key, "Not specified")
-        if value is None or str(value).strip() == "":
-            value = "Not specified"
-        cleaned[key] = str(value).strip()
-
-    valid_types = {"KYC_AML", "Cybersecurity", "Capital_Adequacy", "Grievance", "FEMA", "General_Compliance"}
-    if cleaned["map_type"] not in valid_types:
-        cleaned["map_type"] = "General_Compliance"
-
-    cleaned["id"] = map_obj.get("id") or f"map_{uuid.uuid4().hex[:8]}"
-    return cleaned
-
-
-def call_ollama_for_map(chunk: str) -> Dict[str, Any]:
-    """Call local Phi-3 Mini via Ollama and return one MAP object."""
-    response = ollama.chat(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": MAP_EXTRACTION_PROMPT},
-            {"role": "user", "content": chunk},
-        ],
-        options={"temperature": 0.1},
-    )
-    content = response["message"]["content"]
-    raw_map = extract_json_from_response(content)
-    return validate_map_fields(raw_map)
+def infer_evidence_required(sentence: str, map_type: str) -> str:
+    lower = (sentence or "").lower()
+    if "ckycr" in lower or "kyc" in lower:
+        return "CKYCR/KYC upload confirmation report and rejected-record queue screenshot"
+    if "cic" in lower or "credit information" in lower:
+        return "CIC upload confirmation and zero-pending rejection report"
+    if "priority sector" in lower or "psl" in lower:
+        return "Priority sector lending return and sector-wise lending portfolio report"
+    if "aml" in lower or "pmla" in lower or "fiu" in lower:
+        return "FIU-IND submission acknowledgement and transaction monitoring audit report"
+    if "interest" in lower and "deposit" in lower:
+        return "Branch display proof and website screenshot with timestamp"
+    if "inoperative" in lower:
+        return "Account reclassification report and branch compliance certificate"
+    if "bsbda" in lower or "basic savings" in lower:
+        return "BSBDA account opening report and branch compliance certificate"
+    if map_type == "REPORTING_OBLIGATION":
+        return "Regulatory submission acknowledgement and signed compliance report"
+    if map_type == "SYSTEM_CHANGE":
+        return "System report, upload log, or screenshot proving implementation"
+    if map_type == "POLICY_UPDATE":
+        return "Approved policy note and implementation circular"
+    return "Compliance certificate, implementation report, or audit evidence"
 
 
-def deduplicate_maps(maps: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Remove duplicate obligations across chunks using normalized obligation text."""
-    seen = set()
-    unique = []
-    for item in maps:
-        key = re.sub(r"\W+", "", item.get("obligation_text", "").lower())[:180]
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique
+def infer_measurable_condition(sentence: str) -> str:
+    lower = (sentence or "").lower()
+    if "within 7 days" in lower:
+        return "100% completion within 7 days with zero overdue exceptions"
+    if "within 30 days" in lower:
+        return "100% completion within 30 days with documentary evidence"
+    if "within 45 days" in lower:
+        return "100% completion within 45 days with documentary evidence"
+    if "within 90 days" in lower:
+        return "100% completion within 90 days with management sign-off"
+    if "ckycr" in lower:
+        return "100% of customer KYC records uploaded to CKYCR with zero rejected uploads pending beyond allowed timeline"
+    if "priority sector" in lower:
+        return "Priority sector lending target achieved and supported by submitted RBI return"
+    if "suspicious" in lower or "fiu" in lower:
+        return "100% of suspicious transactions reported to FIU-IND within prescribed reporting window"
+    if "display" in lower or "publish" in lower:
+        return "All required displays/publications updated with timestamped proof and zero discrepancy"
+    return "Documented evidence proves the obligation has been fully completed within the required timeline"
 
 
-def post_map_to_backend(map_obj: Dict[str, Any], backend_url: str = "http://localhost:8000") -> Optional[Dict[str, Any]]:
-    """POST one MAP to backend if Member A's API is running."""
-    url = backend_url.rstrip("/") + "/maps"
-    try:
-        response = requests.post(url, json=map_obj, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except Exception as exc:
-        print(f"Backend POST skipped/failed: {exc}")
-        return None
+def _format_deadline(entities: Dict[str, Any]) -> str:
+    dates = entities.get("dates") or []
+    if not dates:
+        return "Not specified"
+    # Prefer the original matched phrase so UI can show the regulatory language.
+    return str(dates[0].get("text") or dates[0].get("date") or "Not specified")
 
 
-def add_embedding_fields(map_obj: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate local embedding for obligation_text and attach it.
+def _format_penalty(entities: Dict[str, Any]) -> Any:
+    money = entities.get("money") or 0.0
+    if money <= 0:
+        return 0.0
+    return float(money)
 
-    If your backend stores embeddings separately, remove this field before POSTing.
-    """
-    model = get_embedding_model()
-    embedding = model.encode(map_obj["obligation_text"]).tolist()
-    enriched = dict(map_obj)
-    enriched["obligation_embedding"] = embedding
-    return enriched
+
+def _regulatory_reference(title: Optional[str], ref_number: Optional[str], entities: Dict[str, Any]) -> str:
+    clauses = entities.get("clauses") or []
+    parts = []
+    if title:
+        parts.append(title)
+    if ref_number:
+        parts.append(ref_number)
+    if clauses:
+        parts.append(", ".join(clauses))
+    return " | ".join(parts) if parts else "Not specified"
+
+
+def assemble_map(
+    obligation_sentence: str,
+    entities: Dict[str, Any],
+    title: Optional[str] = None,
+    ref_number: Optional[str] = None,
+) -> Dict[str, Any]:
+    map_type = infer_map_type(obligation_sentence)
+    return {
+        "obligation_text": obligation_sentence.strip(),
+        "measurable_condition": infer_measurable_condition(obligation_sentence),
+        "deadline": _format_deadline(entities),
+        "penalty_exposure": _format_penalty(entities),
+        "evidence_required": infer_evidence_required(obligation_sentence, map_type),
+        "regulatory_reference": _regulatory_reference(title, ref_number, entities),
+        "map_type": map_type,
+    }
+
+
+def validate_map(map_obj: Dict[str, Any]) -> bool:
+    if not isinstance(map_obj, dict):
+        return False
+    if len(str(map_obj.get("obligation_text", "")).strip()) < 10:
+        return False
+    if map_obj.get("map_type") not in VALID_MAP_TYPES:
+        return False
+    for key in REQUIRED_MAP_KEYS:
+        if key not in map_obj:
+            return False
+    return True
+
+
+def _similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+
+
+def deduplicate_maps(maps: List[Dict[str, Any]], threshold: float = 0.88) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    for candidate in maps:
+        text = candidate.get("obligation_text", "")
+        if not any(_similarity(text, existing.get("obligation_text", "")) >= threshold for existing in result):
+            result.append(candidate)
+    return result
 
 
 def extract_maps_from_text(
-    circular_text: str,
-    authority: str = "RBI",
-    backend_url: Optional[str] = None,
-    attach_embeddings: bool = False,
+    text: str,
+    title: Optional[str] = None,
+    ref_number: Optional[str] = None,
+    source: str = "RBI",
+    include_scores: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Extract, score, optionally embed, and optionally post MAPs."""
-    extracted = []
-    for chunk in chunk_text(circular_text):
-        try:
-            map_obj = call_ollama_for_map(chunk)
-            scored_map = score_map(map_obj, authority=authority)
-            if attach_embeddings:
-                scored_map = add_embedding_fields(scored_map)
-            extracted.append(scored_map)
-        except Exception as exc:
-            print(f"Extraction failed for chunk: {exc}")
+    """Extract MAP dicts from circular text without using any LLM."""
+    obligation_sentences = extract_obligation_sentences(text)
+    classified = classify_sentences(obligation_sentences)
 
-    unique_maps = deduplicate_maps(extracted)
+    maps: List[Dict[str, Any]] = []
+    for item in classified:
+        if item.get("label") != "OBLIGATION":
+            continue
+        sentence = str(item.get("sentence", ""))
+        entities = extract_entities(sentence)
+        if not entities.get("money"):
+            # If the exact obligation sentence has no penalty but the circular nearby mentions one,
+            # use the document-level penalty as a practical demo fallback.
+            document_penalty = parse_money_to_rupees(text)
+            if document_penalty:
+                entities["money"] = document_penalty
+        map_obj = assemble_map(sentence, entities, title=title, ref_number=ref_number)
+        if validate_map(map_obj):
+            maps.append(map_obj)
 
-    if backend_url:
-        for map_obj in unique_maps:
-            post_map_to_backend(map_obj, backend_url=backend_url)
+    maps = deduplicate_maps(maps)
+    if include_scores:
+        return score_maps_batch(maps, source=source)
+    return maps
 
-    return unique_maps
+
+def _make_map_id(map_obj: Dict[str, Any], mandate_id: Any = None) -> str:
+    seed = f"{mandate_id}|{map_obj.get('obligation_text', '')}|{map_obj.get('regulatory_reference', '')}"
+    return "map_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+
+
+def _get_model_classes():
+    """Best-effort import of backend models without hardcoding one schema too tightly."""
+    try:
+        import backend.models as models
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("Could not import backend.models. Run from project root after Member A backend exists.") from exc
+
+    mandate_cls = getattr(models, "Mandate", None) or getattr(models, "Mandates", None)
+    map_cls = getattr(models, "MAP", None) or getattr(models, "Map", None) or getattr(models, "Maps", None)
+    if mandate_cls is None or map_cls is None:
+        raise RuntimeError("Could not find Mandate and MAP/Map models in backend.models.")
+    return mandate_cls, map_cls
+
+
+def _read_attr(obj: Any, names: List[str], default: Any = None) -> Any:
+    for name in names:
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    return default
+
+
+def _set_if_exists(obj: Any, name: str, value: Any) -> None:
+    if hasattr(obj, name):
+        setattr(obj, name, value)
+
+
+def extract_maps_from_mandate(mandate_id, db) -> List[str]:
+    """
+    Required DB function:
+        Fetches mandate from DB, runs pipeline, stores MAPs in maps table, marks mandate processed.
+
+    This is written defensively because Member A's exact SQLAlchemy model names/columns may differ.
+    """
+    Mandate, MapModel = _get_model_classes()
+    mandate = db.query(Mandate).filter(getattr(Mandate, "id") == mandate_id).first()
+    if not mandate:
+        raise ValueError(f"Mandate not found: {mandate_id}")
+
+    text = _read_attr(mandate, ["text", "content", "document_text", "raw_text"], "")
+    title = _read_attr(mandate, ["title", "name"], None)
+    ref_number = _read_attr(mandate, ["ref_number", "reference_number", "regulatory_reference"], None)
+    source = _read_attr(mandate, ["source", "authority"], "RBI")
+
+    maps = extract_maps_from_text(text, title=title, ref_number=ref_number, source=source, include_scores=True)
+    stored_ids: List[str] = []
+
+    for map_obj in maps:
+        map_id = _make_map_id(map_obj, mandate_id)
+        record = MapModel()
+        _set_if_exists(record, "id", map_id)
+        _set_if_exists(record, "mandate_id", mandate_id)
+        for key, value in map_obj.items():
+            _set_if_exists(record, key, value)
+        _set_if_exists(record, "status", "OPEN")
+        db.add(record)
+        stored_ids.append(map_id)
+
+    _set_if_exists(mandate, "processed", True)
+    db.commit()
+    return stored_ids
+
+
+def process_unprocessed_mandates(db) -> Dict[str, Any]:
+    """
+    Required DB function:
+        Finds mandates where processed=False and runs extraction on each.
+    """
+    Mandate, _MapModel = _get_model_classes()
+    if hasattr(Mandate, "processed"):
+        mandates = db.query(Mandate).filter(getattr(Mandate, "processed") == False).all()  # noqa: E712
+    else:
+        mandates = db.query(Mandate).all()
+
+    results = {}
+    for mandate in mandates:
+        mandate_id = getattr(mandate, "id")
+        stored = extract_maps_from_mandate(mandate_id, db)
+        results[str(mandate_id)] = stored
+    return {"processed_mandates": len(results), "stored_map_ids": results}
 
 
 if __name__ == "__main__":
-    sample_circular = """
-    RBI Circular: Customer Due Diligence and KYC Update Requirements.
-    Banks shall ensure that all customer KYC records are updated within 30 days from the date of this circular.
-    Banks must maintain documentary evidence of KYC update completion and submit compliance confirmation
-    to the Compliance Department. Failure to comply may attract supervisory action under applicable RBI guidelines.
-    """
+    sample_circulars = [
+        {
+            "title": "RBI Master Direction on KYC — CKYCR Upload Directions",
+            "ref_number": "RBI/2026-27/DOR.AML.REC.01",
+            "source": "RBI",
+            "text": """
+            All banks shall upload pending customer KYC documents to Central KYC Registry within 45 days.
+            Canara Bank shall rectify rejected CKYCR uploads within 7 days of rejection report receipt.
+            Banks may consider customer awareness messages for digital safety.
+            """,
+        },
+        {
+            "title": "RBI Priority Sector Lending Master Direction",
+            "ref_number": "RBI/2026-27/FIDD.PSL.REC.02",
+            "source": "RBI",
+            "text": """
+            Banks must achieve prescribed priority sector lending targets by September 30, 2026.
+            The penalty exposure for shortfall may be ₹1.63 crore based on supervisory assessment.
+            Branches are required to maintain sector-wise lending portfolio reports.
+            """,
+        },
+        {
+            "title": "Credit Information Companies Data Rectification",
+            "ref_number": "RBI/2026-27/CIC.REC.03",
+            "source": "RBI",
+            "text": """
+            Banks are required to upload corrected records to Credit Information Companies within 7 days of receipt of rejection report.
+            Canara Bank shall ensure zero CIC rejection reports pending beyond 7 days.
+            Non-compliance may attract penalty of Rs.32 lakh.
+            """,
+        },
+    ]
 
-    maps = extract_maps_from_text(sample_circular, authority="RBI", attach_embeddings=False)
-    print(json.dumps(maps, indent=2))
+    all_maps: List[Dict[str, Any]] = []
+    for circular in sample_circulars:
+        maps = extract_maps_from_text(
+            circular["text"],
+            title=circular["title"],
+            ref_number=circular["ref_number"],
+            source=circular["source"],
+            include_scores=True,
+        )
+        all_maps.extend(maps)
+
+    print(json.dumps(all_maps, indent=2, ensure_ascii=False, default=str))
