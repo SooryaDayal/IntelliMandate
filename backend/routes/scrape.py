@@ -453,3 +453,14 @@ def get_scrape_history(
             for m in mandates
         ]
     }
+
+@router.post("/offline")
+def trigger_offline_scrape(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    return {
+        "message": "Offline demo scrape triggered.",
+        "status":  "queued",
+        "note":    "Will load from demo_data/ folder."
+    }
