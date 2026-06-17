@@ -3,7 +3,7 @@ import requests
 import os
 import time
 
-API = os.getenv("BACKEND_URL", "https://larhonda-unlaurelled-bristol.ngrok-free.dev")
+API = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def signal_html(signal_type):
