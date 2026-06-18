@@ -1,0 +1,56 @@
+{
+  "bank_name": "Canara Bank",
+  "head_office": "112, J C Road, Bengaluru - 560 002",
+  "regulator": "Reserve Bank of India",
+  "terminology": "Wings",
+  "lines_of_defense": {
+    "first": {
+      "label": "1st Line of Defense — Business Wings",
+      "wings": [
+        "Retail Banking Wing",
+        "Commercial Banking Wing",
+        "International Banking Wing",
+        "Integrated Treasury Wing",
+        "Operations Wing",
+        "Central Processing Wing"
+      ]
+    },
+    "second": {
+      "label": "2nd Line of Defense — Control Wings",
+      "wings": [
+        "Compliance Wing",
+        "Risk Management Wing",
+        "Financial Management Wing",
+        "CISO Office"
+      ]
+    },
+    "third": {
+      "label": "3rd Line of Defense — Audit Wing",
+      "wings": [
+        "Internal Audit Wing"
+      ]
+    }
+  },
+  "domain_mapping": {
+    "KYC":                 ["Compliance Wing", "Retail Banking Wing"],
+    "AML":                 ["Compliance Wing", "Retail Banking Wing"],
+    "CKYCR":               ["Compliance Wing", "Retail Banking Wing"],
+    "Inoperative Account": ["Retail Banking Wing", "Operations Wing"],
+    "Capital Adequacy":    ["Risk Management Wing", "Integrated Treasury Wing"],
+    "NPA":                 ["Risk Management Wing", "Commercial Banking Wing"],
+    "Cybersecurity":       ["CISO Office", "Operations Wing"],
+    "Data Localization":   ["CISO Office", "Operations Wing"],
+    "Priority Sector":     ["Commercial Banking Wing", "Compliance Wing"],
+    "BSBDA":               ["Retail Banking Wing", "Compliance Wing"],
+    "Lending":             ["Retail Banking Wing", "Commercial Banking Wing"],
+    "Interest Rate":       ["Retail Banking Wing", "Financial Management Wing"],
+    "FEMA":                ["International Banking Wing", "Compliance Wing"],
+    "Reporting":           ["Compliance Wing", "Financial Management Wing"],
+    "CRR":                 ["Integrated Treasury Wing", "Risk Management Wing"],
+    "SLR":                 ["Integrated Treasury Wing", "Risk Management Wing"],
+    "Forex":               ["International Banking Wing", "Integrated Treasury Wing"],
+    "Customer Grievance":  ["Operations Wing", "Compliance Wing"],
+    "Credit Information":  ["Operations Wing", "Compliance Wing"],
+    "Basel":               ["Risk Management Wing", "Financial Management Wing"]
+  }
+}
