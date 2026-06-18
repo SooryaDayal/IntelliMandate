@@ -578,5 +578,6 @@ def get_stats(db: Session = Depends(get_db)):
         "total_penalty_exposure": float(penalty_sum),
         "total_penalty_formatted": f"₹{float(penalty_sum):,.2f}"
     }
+
 from backend.routes.agents import router as agents_router
 app.include_router(agents_router)
