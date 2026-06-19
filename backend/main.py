@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from backend.database import get_db, check_connection
 from backend.models import Mandate, Map, Assignment, Evidence, AuditLog
 
+from backend.routes.scrape import router as scrape_router
+
 
 # ============================================================
 # APP INITIALIZATION
@@ -20,6 +22,8 @@ app = FastAPI(
     description="Agentic Regulatory Intelligence & Autonomous Compliance Resolution Platform",
     version="1.0.0"
 )
+
+app.include_router(scrape_router)
 
 # Allow Streamlit frontend to talk to this backend
 app.add_middleware(
@@ -530,3 +534,50 @@ def create_map(
 
 from backend.routes.scrape import router as scrape_router
 app.include_router(scrape_router)
+
+@app.get("/stats", tags=["Stats"])
+def get_stats(db: Session = Depends(get_db)):
+    from sqlalchemy import func
+    from backend.models import Mandate, Map
+
+    total_mandates = db.query(Mandate).count()
+    unprocessed    = db.query(Mandate).filter(
+                         Mandate.processed == False
+                     ).count()
+    total_maps     = db.query(Map).count()
+    critical_maps  = db.query(Map).filter(
+                         Map.priority_tier == "CRITICAL"
+                     ).count()
+    high_maps      = db.query(Map).filter(
+                         Map.priority_tier == "HIGH"
+                     ).count()
+    medium_maps    = db.query(Map).filter(
+                         Map.priority_tier == "MEDIUM"
+                     ).count()
+    low_maps       = db.query(Map).filter(
+                         Map.priority_tier == "LOW"
+                     ).count()
+    closed_maps    = db.query(Map).filter(
+                         Map.status == "CLOSED"
+                     ).count()
+    penalty_sum    = db.query(
+                         func.sum(Map.penalty_exposure)
+                     ).filter(
+                         Map.status != "CLOSED"
+                     ).scalar() or 0
+
+    return {
+        "total_mandates":       total_mandates,
+        "unprocessed_mandates": unprocessed,
+        "total_maps":           total_maps,
+        "critical_maps":        critical_maps,
+        "high_maps":            high_maps,
+        "medium_maps":          medium_maps,
+        "low_maps":             low_maps,
+        "closed_maps":          closed_maps,
+        "total_penalty_exposure": float(penalty_sum),
+        "total_penalty_formatted": f"₹{float(penalty_sum):,.2f}"
+    }
+
+from backend.routes.agents import router as agents_router
+app.include_router(agents_router)
