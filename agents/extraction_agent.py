@@ -29,6 +29,10 @@ from .entity_extractor import extract_entities, parse_money_to_rupees
 from .finbert_classifier import classify_sentences
 from .mpi_engine import score_maps_batch
 from .obligation_extractor import extract_obligation_sentences
+try:
+    from .vector_store import add_map_embedding
+except Exception:  # Allows extraction tests to run even if ChromaDB is not installed yet.
+    add_map_embedding = None
 
 REQUIRED_MAP_KEYS = [
     "obligation_text",
@@ -240,6 +244,27 @@ def _set_if_exists(obj: Any, name: str, value: Any) -> None:
         setattr(obj, name, value)
 
 
+
+def infer_canara_wing_hint(obligation_text: str) -> str:
+    """Return Canara Bank Wing routing hint for logs until Member A routing engine is connected."""
+    text = (obligation_text or "").lower()
+    if any(term in text for term in ("kyc", "ckycr", "aml", "pmla")):
+        return "MAP obligation touches KYC/AML → route to Compliance Wing and Retail Banking Wing"
+    if "priority sector" in text or "psl" in text:
+        return "MAP obligation touches Priority Sector → route to Commercial Banking Wing and Compliance Wing"
+    if "credit information" in text or "cic" in text:
+        return "MAP obligation touches Credit Information → route to Operations Wing and Compliance Wing"
+    if "inoperative" in text:
+        return "MAP obligation touches Inoperative Account → route to Retail Banking Wing and Operations Wing"
+    if "interest" in text and "deposit" in text:
+        return "MAP obligation touches Interest Rate → route to Retail Banking Wing and Financial Management Wing"
+    if "bsbda" in text or "basic savings" in text:
+        return "MAP obligation touches BSBDA → route to Retail Banking Wing and Compliance Wing"
+    if "crr" in text or "slr" in text:
+        return "MAP obligation touches CRR/SLR → route to Integrated Treasury Wing and Risk Management Wing"
+    return "MAP obligation is general regulatory compliance → route to Compliance Wing"
+
+
 def extract_maps_from_mandate(mandate_id, db) -> List[str]:
     """
     Required DB function:
@@ -271,6 +296,16 @@ def extract_maps_from_mandate(mandate_id, db) -> List[str]:
         db.add(record)
         stored_ids.append(map_id)
 
+        if add_map_embedding is not None:
+            try:
+                add_map_embedding(
+                    map_id=map_id,
+                    obligation_text=str(map_obj.get("obligation_text", "")),
+                    measurable_condition=str(map_obj.get("measurable_condition", "")),
+                )
+            except Exception as exc:
+                print(f"[VectorStore] Failed to store embedding for {map_id}: {exc}")
+
     _set_if_exists(mandate, "processed", True)
     db.commit()
     return stored_ids
@@ -291,6 +326,9 @@ def process_unprocessed_mandates(db) -> Dict[str, Any]:
     for mandate in mandates:
         mandate_id = getattr(mandate, "id")
         stored = extract_maps_from_mandate(mandate_id, db)
+        text = _read_attr(mandate, ["text", "content", "document_text", "raw_text"], "")
+        for map_obj in extract_maps_from_text(text, include_scores=False):
+            print(infer_canara_wing_hint(map_obj.get("obligation_text", "")))
         results[str(mandate_id)] = stored
     return {"processed_mandates": len(results), "stored_map_ids": results}
 
