@@ -21,7 +21,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date
+import uuid
+from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +30,10 @@ from .entity_extractor import extract_entities, parse_money_to_rupees
 from .finbert_classifier import classify_sentences
 from .mpi_engine import score_maps_batch
 from .obligation_extractor import extract_obligation_sentences
+try:
+    from .vector_store import add_map_embedding
+except Exception:  # Allows extraction tests to run even if ChromaDB is not installed yet.
+    add_map_embedding = None
 
 REQUIRED_MAP_KEYS = [
     "obligation_text",
@@ -211,7 +216,7 @@ def extract_maps_from_text(
 
 def _make_map_id(map_obj: Dict[str, Any], mandate_id: Any = None) -> str:
     seed = f"{mandate_id}|{map_obj.get('obligation_text', '')}|{map_obj.get('regulatory_reference', '')}"
-    return "map_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
 def _get_model_classes():
@@ -238,6 +243,63 @@ def _read_attr(obj: Any, names: List[str], default: Any = None) -> Any:
 def _set_if_exists(obj: Any, name: str, value: Any) -> None:
     if hasattr(obj, name):
         setattr(obj, name, value)
+
+def _db_deadline_value(deadline_value: Any) -> Optional[date]:
+    """
+    Convert MAP deadline text into a PostgreSQL-compatible date value.
+    DB deadline column expects date or None, not strings like 'Not specified'.
+    """
+    if deadline_value is None:
+        return None
+
+    if isinstance(deadline_value, date):
+        return deadline_value
+
+    text = str(deadline_value).strip()
+
+    if not text or text.lower() in {"not specified", "none", "null", "n/a"}:
+        return None
+
+    # Handles: within 7 days, within 30 days, within 45 days
+    match = re.search(r"within\s+(\d+)\s+days?", text.lower())
+    if match:
+        days = int(match.group(1))
+        return datetime.utcnow().date() + timedelta(days=days)
+
+    # Handles ISO format: 2026-09-30
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        pass
+
+    # Handles: September 30, 2026
+    try:
+        return datetime.strptime(text, "%B %d, %Y").date()
+    except ValueError:
+        pass
+
+    # If we cannot parse it, store NULL instead of crashing
+    return None
+
+
+def infer_canara_wing_hint(obligation_text: str) -> str:
+    """Return Canara Bank Wing routing hint for logs until Member A routing engine is connected."""
+    text = (obligation_text or "").lower()
+    if any(term in text for term in ("kyc", "ckycr", "aml", "pmla")):
+        return "MAP obligation touches KYC/AML → route to Compliance Wing and Retail Banking Wing"
+    if "priority sector" in text or "psl" in text:
+        return "MAP obligation touches Priority Sector → route to Commercial Banking Wing and Compliance Wing"
+    if "credit information" in text or "cic" in text:
+        return "MAP obligation touches Credit Information → route to Operations Wing and Compliance Wing"
+    if "inoperative" in text:
+        return "MAP obligation touches Inoperative Account → route to Retail Banking Wing and Operations Wing"
+    if "interest" in text and "deposit" in text:
+        return "MAP obligation touches Interest Rate → route to Retail Banking Wing and Financial Management Wing"
+    if "bsbda" in text or "basic savings" in text:
+        return "MAP obligation touches BSBDA → route to Retail Banking Wing and Compliance Wing"
+    if "crr" in text or "slr" in text:
+        return "MAP obligation touches CRR/SLR → route to Integrated Treasury Wing and Risk Management Wing"
+    return "MAP obligation is general regulatory compliance → route to Compliance Wing"
 
 
 def extract_maps_from_mandate(mandate_id, db) -> List[str]:
@@ -266,10 +328,22 @@ def extract_maps_from_mandate(mandate_id, db) -> List[str]:
         _set_if_exists(record, "id", map_id)
         _set_if_exists(record, "mandate_id", mandate_id)
         for key, value in map_obj.items():
+            if key == "deadline":
+                value = _db_deadline_value(value)
             _set_if_exists(record, key, value)
         _set_if_exists(record, "status", "OPEN")
         db.add(record)
         stored_ids.append(map_id)
+
+        if add_map_embedding is not None:
+            try:
+                add_map_embedding(
+                    map_id=map_id,
+                    obligation_text=str(map_obj.get("obligation_text", "")),
+                    measurable_condition=str(map_obj.get("measurable_condition", "")),
+                )
+            except Exception as exc:
+                print(f"[VectorStore] Failed to store embedding for {map_id}: {exc}")
 
     _set_if_exists(mandate, "processed", True)
     db.commit()
@@ -291,6 +365,9 @@ def process_unprocessed_mandates(db) -> Dict[str, Any]:
     for mandate in mandates:
         mandate_id = getattr(mandate, "id")
         stored = extract_maps_from_mandate(mandate_id, db)
+        text = _read_attr(mandate, ["text", "content", "document_text", "raw_text"], "")
+        for map_obj in extract_maps_from_text(text, include_scores=False):
+            print(infer_canara_wing_hint(map_obj.get("obligation_text", "")))
         results[str(mandate_id)] = stored
     return {"processed_mandates": len(results), "stored_map_ids": results}
 
