@@ -21,7 +21,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date
+import uuid
+from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
@@ -215,7 +216,7 @@ def extract_maps_from_text(
 
 def _make_map_id(map_obj: Dict[str, Any], mandate_id: Any = None) -> str:
     seed = f"{mandate_id}|{map_obj.get('obligation_text', '')}|{map_obj.get('regulatory_reference', '')}"
-    return "map_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
 def _get_model_classes():
@@ -243,6 +244,42 @@ def _set_if_exists(obj: Any, name: str, value: Any) -> None:
     if hasattr(obj, name):
         setattr(obj, name, value)
 
+def _db_deadline_value(deadline_value: Any) -> Optional[date]:
+    """
+    Convert MAP deadline text into a PostgreSQL-compatible date value.
+    DB deadline column expects date or None, not strings like 'Not specified'.
+    """
+    if deadline_value is None:
+        return None
+
+    if isinstance(deadline_value, date):
+        return deadline_value
+
+    text = str(deadline_value).strip()
+
+    if not text or text.lower() in {"not specified", "none", "null", "n/a"}:
+        return None
+
+    # Handles: within 7 days, within 30 days, within 45 days
+    match = re.search(r"within\s+(\d+)\s+days?", text.lower())
+    if match:
+        days = int(match.group(1))
+        return datetime.utcnow().date() + timedelta(days=days)
+
+    # Handles ISO format: 2026-09-30
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        pass
+
+    # Handles: September 30, 2026
+    try:
+        return datetime.strptime(text, "%B %d, %Y").date()
+    except ValueError:
+        pass
+
+    # If we cannot parse it, store NULL instead of crashing
+    return None
 
 
 def infer_canara_wing_hint(obligation_text: str) -> str:
@@ -291,6 +328,8 @@ def extract_maps_from_mandate(mandate_id, db) -> List[str]:
         _set_if_exists(record, "id", map_id)
         _set_if_exists(record, "mandate_id", mandate_id)
         for key, value in map_obj.items():
+            if key == "deadline":
+                value = _db_deadline_value(value)
             _set_if_exists(record, key, value)
         _set_if_exists(record, "status", "OPEN")
         db.add(record)
