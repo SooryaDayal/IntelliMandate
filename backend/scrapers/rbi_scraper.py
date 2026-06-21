@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, date
 from typing import Optional
 from bs4 import BeautifulSoup
+from backend.scrapers.classifier import detect_source_from_url
 
 
 # ============================================================
@@ -260,7 +261,7 @@ def scrape_circular_index(max_circulars: int = 50) -> list[dict]:
                     "ref_number": ref_number,
                     "department": department,
                     "doc_type":   doc_type,
-                    "source":     "RBI",
+                    "source": detect_source_from_url(doc_url),
                 })
 
             if len(circulars) >= max_circulars:

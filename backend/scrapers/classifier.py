@@ -42,6 +42,31 @@ CIRCULAR_AMENDMENT  = "CIRCULAR_AMENDMENT"
 CONSULTATION_PAPER  = "CONSULTATION_PAPER"
 ADVISORY            = "ADVISORY"
 
+SOURCE_DOMAIN_MAP = {
+    "rbi.org.in":      "RBI",
+    "cert-in.org.in":  "CERT_IN",
+    "npci.org.in":     "NPCI",
+    "meity.gov.in":    "MEITY",
+    "fiuindia.gov.in": "FIU_IND",
+}
+
+
+def detect_source_from_url(url: str) -> str:
+    """
+    Detects the regulatory authority from a circular's URL.
+    Falls back to RBI if no domain matches (safe default
+    since RBI is the most common source).
+    """
+    if not url:
+        return "RBI"
+
+    url_lower = url.lower()
+    for domain, source in SOURCE_DOMAIN_MAP.items():
+        if domain in url_lower:
+            return source
+
+    return "RBI"
+
 ALL_SIGNAL_TYPES = [
     MANDATORY_IMMEDIATE,
     MANDATORY_FUTURE,
