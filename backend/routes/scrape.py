@@ -23,6 +23,11 @@ from sqlalchemy import desc
 from backend.database import get_db
 from backend.models import Mandate
 
+from backend.scrapers.offline_ingestion import (
+         load_demo_data, ingest_pdf_bytes, ingest_zip_file
+     )
+from fastapi import UploadFile, File, Form
+
 # Scraper components
 from backend.scrapers.rbi_scraper   import fetch_rbi_circulars
 from backend.scrapers.pdf_extractor import extract_circular_text
@@ -275,6 +280,81 @@ def run_quick_scrape(
         print(f"[Quick Scrape] ERROR: {e}")
         db.rollback()
 
+# ============================================================
+# ROUTE: POST /scrape/offline
+# Loads all pre-downloaded demo circulars from demo_data/
+# Zero internet required.
+# ============================================================
+ 
+def run_offline_demo_scrape(db: Session) -> None:
+    """
+    Background task — loads demo_data/ circulars,
+    stores each as a Mandate, identical flow to online scrape
+    but reading from local PDFs instead of the web.
+    """
+    global scrape_state
+ 
+    scrape_state["status"]       = "running"
+    scrape_state["started_at"]   = datetime.now(timezone.utc).isoformat()
+    scrape_state["source"]       = "DEMO_DATA"
+    scrape_state["circulars_found"]   = 0
+    scrape_state["circulars_stored"]  = 0
+    scrape_state["circulars_skipped"] = 0
+    scrape_state["last_error"]   = None
+ 
+    print("\n[Offline Scrape] Loading demo_data/ circulars...")
+ 
+    try:
+        circulars = load_demo_data()
+        scrape_state["circulars_found"] = len(circulars)
+ 
+        if not circulars:
+            print("[Offline Scrape] No demo circulars found.")
+            scrape_state["status"] = "complete"
+            scrape_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+            return
+ 
+        for circular in circulars:
+            url = circular.get("url", "")
+ 
+            existing = db.query(Mandate).filter(Mandate.url == url).first()
+            if existing:
+                scrape_state["circulars_skipped"] += 1
+                continue
+ 
+            mandate = Mandate(
+                source       = circular.get("source", "RBI").upper(),
+                signal_type  = circular.get("signal_type", "ADVISORY"),
+                title        = circular.get("title", ""),
+                raw_text     = circular.get("raw_text") or None,
+                url          = url,
+                date_issued  = circular.get("date"),
+                delta_summary= None,
+                processed    = False,
+            )
+ 
+            db.add(mandate)
+            db.commit()
+            db.refresh(mandate)
+ 
+            scrape_state["circulars_stored"] += 1
+            print(f"[Offline Scrape] Stored: {mandate.title[:50]}... (id={mandate.id})")
+ 
+        scrape_state["status"]       = "complete"
+        scrape_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+        print(
+            f"[Offline Scrape] Done. "
+            f"Stored: {scrape_state['circulars_stored']} | "
+            f"Skipped: {scrape_state['circulars_skipped']}"
+        )
+ 
+    except Exception as e:
+        scrape_state["status"]     = "error"
+        scrape_state["last_error"] = str(e)
+        scrape_state["completed_at"] = datetime.now(timezone.utc).isoformat()
+        print(f"[Offline Scrape] ERROR: {e}")
+        db.rollback()
+
 
 # ============================================================
 # ROUTE 1: POST /scrape/rbi
@@ -459,8 +539,117 @@ def trigger_offline_scrape(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
+    """
+    Loads the 10 pre-downloaded Canara Bank relevant circulars
+    from demo_data/. Zero internet required. Used for demo day
+    if WiFi is unavailable or RBI blocks the connection.
+    """
+    if scrape_state["status"] == "running":
+        raise HTTPException(
+            status_code=409,
+            detail="A scrape is already running. Check GET /scrape/status."
+        )
+ 
+    background_tasks.add_task(run_offline_demo_scrape, db=db)
+ 
     return {
-        "message": "Offline demo scrape triggered.",
-        "status":  "queued",
-        "note":    "Will load from demo_data/ folder."
+        "message":    "Offline demo scrape started. Loading 10 demo_data/ circulars.",
+        "status":     "running",
+        "poll_url":   "/scrape/status",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+# ============================================================
+# ROUTE: POST /scrape/upload
+# Accepts a manually uploaded PDF circular.
+# Stores it, then triggers the orchestrator on it.
+# ============================================================
+
+@router.post("/upload")
+async def upload_circular(
+    background_tasks: BackgroundTasks,
+    file:   UploadFile = File(...),
+    title:  str = Form(None),
+    source: str = Form("RBI"),
+    db: Session = Depends(get_db)
+):
+    """
+    Accepts a single PDF circular uploaded manually through
+    the Streamlit 'Upload Circular' page. Extracts text,
+    classifies signal type, stores as a Mandate, then triggers
+    the ReAct orchestrator on it automatically.
+    """
+    file_bytes = await file.read()
+
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file uploaded.")
+
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are supported for upload."
+        )
+
+    circular = ingest_pdf_bytes(
+        file_bytes = file_bytes,
+        filename   = file.filename,
+        title      = title,
+        source     = source,
+    )
+
+    if not circular or not circular.get("raw_text"):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Could not extract text from this PDF. "
+                "It may be a scanned/image-only document."
+            )
+        )
+
+    existing = db.query(Mandate).filter(
+        Mandate.url == circular["url"]
+    ).first()
+    if existing:
+        return {
+            "message":    "This circular was already uploaded.",
+            "mandate_id": str(existing.id),
+            "duplicate":  True,
+        }
+
+    mandate = Mandate(
+        source       = circular["source"],
+        signal_type  = circular["signal_type"],
+        title        = circular["title"],
+        raw_text     = circular["raw_text"],
+        url          = circular["url"],
+        date_issued  = circular.get("date"),
+        processed    = False,
+    )
+
+    db.add(mandate)
+    db.commit()
+    db.refresh(mandate)
+
+    print(f"[Upload] Mandate stored: {mandate.id} — triggering orchestrator...")
+
+    try:
+        from backend.routes.agents import run_orchestration
+        background_tasks.add_task(
+            run_orchestration,
+            mandate_id = str(mandate.id),
+            db         = db
+        )
+    except ImportError:
+        print("[Upload] Orchestrator not available yet — mandate stored, processing skipped.")
+
+    return {
+        "message":     "Circular uploaded and processing started.",
+        "mandate_id":  str(mandate.id),
+        "title":       mandate.title,
+        "signal_type": mandate.signal_type,
+        "poll_url":    "/agents/orchestration/status",
+        "note": (
+            "The ReAct orchestrator is now classifying, extracting "
+            "obligations, scoring MPI, and routing to Canara Bank Wings."
+        )
     }

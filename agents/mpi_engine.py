@@ -27,6 +27,9 @@ AUTHORITY_WEIGHTS = {
     "RBI": 10,
     "FIU_IND": 10,
     "FIU-IND": 10,
+    "CERT_IN": 9,
+    "NPCI": 7,
+    "MEITY": 6,
     "SEBI": 8,
     "IRDAI": 6,
     "MCA": 5,
@@ -233,26 +236,17 @@ def compute_mpi_score(
     deadline_urgency = calculate_deadline_urgency(deadline)
     recurrence_risk = calculate_recurrence_risk(obligation_text)
 
-    # v3 standalone test explicitly expects advisory with zero penalty to remain LOW.
-    # For zero-penalty advisories, do not let authority weight alone inflate the score.
-    is_advisory_zero_penalty = (
-        penalty_rupees <= 0
-        and parse_deadline(deadline) is None
-        and any(term in (obligation_text or "").lower() for term in ("advised", "advisory", "awareness", "may consider"))
+    penalty_component    = (penalty_ceiling * likelihood) * 0.65
+    urgency_component    = deadline_urgency * 0.2
+    authority_component  = float(authority_weight)
+    recurrence_component = recurrence_risk * 2.0
+
+    mpi_raw = (
+        penalty_component
+        + urgency_component
+        + authority_component
+        + recurrence_component
     )
-    if is_advisory_zero_penalty:
-        authority_component = 0.0
-        recurrence_component = 0.0
-        mpi_raw = deadline_urgency * 0.3
-    else:
-        authority_component = authority_weight * 10
-        recurrence_component = recurrence_risk * 5
-        mpi_raw = (
-            (penalty_ceiling * likelihood)
-            + (deadline_urgency * 0.3)
-            + authority_component
-            + recurrence_component
-        )
     mpi_score = min(round(mpi_raw, 2), 100.0)
 
     if mpi_score >= 80:
@@ -265,10 +259,11 @@ def compute_mpi_score(
         priority_tier = "LOW"
 
     breakdown = (
-        f"Penalty ceiling {penalty_ceiling:.1f} × likelihood {likelihood:.2f} = {penalty_ceiling * likelihood:.1f}; "
-        f"Deadline urgency {deadline_urgency:.1f} × 0.3 = {deadline_urgency * 0.3:.1f}; "
-        f"Authority weight {authority_weight} × 10 = {authority_component:.0f}; "
-        f"Recurrence risk {recurrence_risk:.0f} × 5 = {recurrence_component:.0f}; "
+        f"Penalty ceiling {penalty_ceiling:.1f} × likelihood {likelihood:.2f} × 0.65 "
+        f"= {penalty_component:.1f}; "
+        f"Deadline urgency {deadline_urgency:.1f} × 0.2 = {urgency_component:.1f}; "
+        f"Authority weight = {authority_component:.0f}; "
+        f"Recurrence risk {recurrence_risk:.0f} × 2 = {recurrence_component:.0f}; "
         f"MPI = {mpi_score}."
     )
 
