@@ -238,6 +238,17 @@ def orchestrate_mandate(mandate_id: Any, db, store_embeddings: bool = False) -> 
         store_embeddings=store_embeddings,
     )
 
+def run(mandate_id: Any, db, store_embeddings: bool = False) -> Dict[str, Any]:
+    """
+    Backend-compatible entrypoint.
+    backend/routes/agents.py imports this as orchestrator_run.
+    """
+    return orchestrate_mandate(
+        mandate_id=mandate_id,
+        db=db,
+        store_embeddings=store_embeddings,
+    )
+
 
 if __name__ == "__main__":
     sample_text = """
