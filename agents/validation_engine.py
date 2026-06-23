@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from datetime import date, datetime
 from typing import Any, Dict, Optional
 
@@ -179,13 +180,109 @@ def semantic_match_gate(evidence_text: str, measurable_condition: str) -> Dict[s
     }
 
 
+def _read_attr(obj: Any, names: list[str], default: Any = None) -> Any:
+    for name in names:
+        if hasattr(obj, name):
+            return getattr(obj, name)
+    return default
+
+
+def _model_to_map_obj(map_record: Any) -> Dict[str, Any]:
+    if map_record is None:
+        return {}
+
+    return {
+        "id": str(_read_attr(map_record, ["id"], "sample_map")),
+        "deadline": _read_attr(map_record, ["deadline"], None),
+        "date_issued": _read_attr(map_record, ["date_issued"], None),
+        "measurable_condition": _read_attr(map_record, ["measurable_condition"], ""),
+        "regulatory_reference": _read_attr(map_record, ["regulatory_reference"], "Not specified"),
+        "obligation_text": _read_attr(map_record, ["obligation_text"], ""),
+        "evidence_required": _read_attr(map_record, ["evidence_required"], ""),
+        "map_type": _read_attr(map_record, ["map_type"], ""),
+    }
+
+
 def validate_evidence(
-    map_obj: Dict[str, Any],
-    evidence_text: str,
-    evidence_file_bytes: bytes,
+    map_obj: Optional[Dict[str, Any]] = None,
+    evidence_text: str = "",
+    evidence_file_bytes: Optional[bytes] = None,
     upload_timestamp: Optional[datetime] = None,
     mandate_date_issued: Any = None,
+    evidence_id: Optional[str] = None,
+    file_bytes: Optional[bytes] = None,
+    db: Any = None,
 ) -> Dict[str, Any]:
+    """
+    Supports both:
+    1. Direct validation:
+       validate_evidence(map_obj, evidence_text, evidence_file_bytes)
+
+    2. Backend route validation:
+       validate_evidence(evidence_id=evidence_id, evidence_text="", file_bytes=b"", db=db)
+    """
+
+    if evidence_file_bytes is None:
+        evidence_file_bytes = file_bytes or b""
+
+    evidence_record = None
+
+    if map_obj is None and evidence_id and db is not None:
+        try:
+            import backend.models as models
+
+            EvidenceModel = getattr(models, "Evidence", None)
+            MapModel = getattr(models, "Map", None) or getattr(models, "MAP", None) or getattr(models, "Maps", None)
+
+            if EvidenceModel is not None:
+                evidence_uuid = uuid.UUID(str(evidence_id))
+                evidence_record = (
+                    db.query(EvidenceModel)
+                    .filter(getattr(EvidenceModel, "id") == evidence_uuid)
+                    .first()
+                )
+
+            if evidence_record is not None:
+                evidence_text = (
+                    evidence_text
+                    or _read_attr(evidence_record, ["evidence_text", "text", "content", "description", "notes"], "")
+                    or ""
+                )
+
+                upload_timestamp = (
+                    upload_timestamp
+                    or _read_attr(evidence_record, ["uploaded_at", "created_at", "submitted_at"], None)
+                )
+
+                linked_map_id = _read_attr(evidence_record, ["map_id", "mapId", "mandate_map_id"], None)
+
+                map_record = None
+                if linked_map_id is not None and MapModel is not None:
+                    map_record = (
+                        db.query(MapModel)
+                        .filter(getattr(MapModel, "id") == linked_map_id)
+                        .first()
+                    )
+
+                map_obj = _model_to_map_obj(map_record)
+
+        except Exception as exc:
+            return {
+                "evidence_id": evidence_id,
+                "final_status": "VALIDATION_ERROR",
+                "error": str(exc),
+                "validator": "IntelliMandate v1.0",
+            }
+
+    if map_obj is None:
+        map_obj = {
+            "id": evidence_id or "sample_map",
+            "deadline": None,
+            "date_issued": None,
+            "measurable_condition": "",
+            "regulatory_reference": "Not specified",
+        }
+
     gate1 = deadline_gate(map_obj.get("deadline"), upload_timestamp)
     gate2 = integrity_gate(evidence_file_bytes)
     gate3 = temporal_gate(evidence_text, mandate_date_issued or map_obj.get("date_issued"))
@@ -200,7 +297,8 @@ def validate_evidence(
     else:
         final_status = "AUTO_CLOSED"
 
-    return {
+    result = {
+        "evidence_id": evidence_id,
         "map_id": map_obj.get("id", "sample_map"),
         "final_status": final_status,
         "gate_results": gate_results,
@@ -209,6 +307,10 @@ def validate_evidence(
         "validator": "IntelliMandate v1.0",
     }
 
+    if final_status == "AUTO_CLOSED":
+        result["certificate"] = generate_certificate(result, map_obj)
+
+    return result
 
 def generate_certificate(validation_result: Dict[str, Any], map_obj: Dict[str, Any]) -> Dict[str, Any]:
     """Generate a simple compliance certificate JSON after MAP closure."""
