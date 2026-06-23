@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from pydantic import BaseModel
 
-from backend.database import get_db, check_connection
+from backend.database import get_db, check_connection, Base, engine
 from backend.models import Mandate, Map, Assignment, Evidence, AuditLog
 
 from backend.routes.scrape import router as scrape_router
@@ -44,7 +44,8 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     check_connection()
-    print("IntelliMandate API is running.")
+    Base.metadata.create_all(bind=engine)
+    print("IntelliMandate — Canara Bank Compliance Platform — Ready.")
 
 
 # ============================================================
