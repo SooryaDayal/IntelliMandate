@@ -1,0 +1,29 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+:root {
+  /* The deep, almost pure black background */
+  --bg-base: #050505; 
+  /* The slightly lighter black for the cards */
+  --bg-card: #0A0A0A; 
+  /* Softer border color, barely visible */
+  --border-subtle: #1A1A1A; 
+
+  /* Typography */
+  --text-main: #FFFFFF;
+  --text-muted: #8B8B93; 
+
+  /* The exact Neon Blue/Purple from your screenshot */
+  --gradient-neon: linear-gradient(90deg, #00C6FF 0%, #7000FF 100%);
+  --accent-blue: #00C6FF;
+  
+  /* Update the font to match the screenshot (Inter or Plus Jakarta Sans are best for this) */
+  --font-display: 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-main);
+  font-family: var(--font-body);
+}
