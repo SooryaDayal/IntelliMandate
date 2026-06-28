@@ -180,6 +180,76 @@ def deduplicate_maps(maps: List[Dict[str, Any]], threshold: float = 0.88) -> Lis
             result.append(candidate)
     return result
 
+def is_actionable_obligation(sentence: str) -> bool:
+    text = " ".join((sentence or "").lower().split())
+
+    if len(text) < 35:
+        return False
+
+    if len(text) > 900:
+        return False
+
+    noisy_phrases = [
+        "shall be called",
+        "shall come into effect",
+        "shall supersede",
+        "unless the context otherwise requires",
+        "shall have the same meaning",
+        "meaning assigned to them",
+        "inserted with effect",
+        "deleted with effect",
+        "substituted vide",
+        "with effect from",
+        "--- page",
+        "s. no.",
+        "example",
+        "bank a may",
+        "bank b may",
+        "bank c may",
+        "bank d will",
+    ]
+
+    if any(phrase in text for phrase in noisy_phrases):
+        return False
+
+    action_terms = [
+        "shall ensure",
+        "shall submit",
+        "shall report",
+        "shall maintain",
+        "shall upload",
+        "shall update",
+        "shall comply",
+        "shall provide",
+        "shall establish",
+        "shall implement",
+        "shall monitor",
+        "must",
+        "are required to",
+        "is required to",
+        "have to ensure",
+        "will have to",
+    ]
+
+    return any(term in text for term in action_terms)
+
+
+def has_penalty_context(sentence: str) -> bool:
+    text = (sentence or "").lower()
+    penalty_terms = [
+        "penalty",
+        "penal",
+        "fine",
+        "non-compliance",
+        "shortfall",
+        "contravention",
+        "failure to",
+        "liable",
+        "ridf",
+        "allocated amounts",
+    ]
+    return any(term in text for term in penalty_terms)
+
 
 def extract_maps_from_text(
     text: str,
@@ -196,22 +266,36 @@ def extract_maps_from_text(
     for item in classified:
         if item.get("label") != "OBLIGATION":
             continue
+
         sentence = str(item.get("sentence", ""))
+
+        if not is_actionable_obligation(sentence):
+            continue
+
         entities = extract_entities(sentence)
-        if not entities.get("money"):
-            # If the exact obligation sentence has no penalty but the circular nearby mentions one,
-            # use the document-level penalty as a practical demo fallback.
-            document_penalty = parse_money_to_rupees(text)
-            if document_penalty:
-                entities["money"] = document_penalty
+
+    # Do NOT assign document-level money to every MAP.
+    # Only keep money if it appears inside the actual obligation sentence
+    # and the sentence has penalty/shortfall/non-compliance context.
+        if not has_penalty_context(sentence):
+            entities["money"] = 0.0
+
         map_obj = assemble_map(sentence, entities, title=title, ref_number=ref_number)
         if validate_map(map_obj):
             maps.append(map_obj)
 
     maps = deduplicate_maps(maps)
+
     if include_scores:
-        return score_maps_batch(maps, source=source)
-    return maps
+        scored_maps = score_maps_batch(maps, source=source)
+        scored_maps = sorted(
+            scored_maps,
+            key=lambda item: float(item.get("mpi_score", 0) or 0),
+            reverse=True,
+        )
+        return scored_maps[:12]
+
+    return maps[:12]
 
 
 def _make_map_id(map_obj: Dict[str, Any], mandate_id: Any = None) -> str:

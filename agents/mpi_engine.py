@@ -211,7 +211,61 @@ def normalize_penalty(penalty_rupees: float) -> float:
         return 30.0
     return 15.0
 
+def infer_content_risk_score(obligation_text: str) -> float:
+    """
+    Adds business/regulatory risk even when exact rupee penalty is not extracted.
+    Keeps demo realistic for RBI/CERT-In obligations.
+    """
+    text = (obligation_text or "").lower()
 
+    high_terms = [
+        "cyber incident",
+        "cert-in",
+        "kyc",
+        "ckycr",
+        "pmla",
+        "money laundering",
+        "terrorist financing",
+        "fraud",
+        "unauthorised transaction",
+        "crr",
+        "slr",
+        "cash reserve ratio",
+        "statutory liquidity ratio",
+        "priority sector",
+        "shortfall",
+        "default",
+        "non-compliance",
+        "report to the reserve bank",
+        "submit to the reserve bank",
+        "cims portal",
+        "daksh portal",
+    ]
+
+    medium_terms = [
+        "shall submit",
+        "shall report",
+        "shall maintain",
+        "shall ensure",
+        "shall implement",
+        "shall monitor",
+        "shall update",
+        "shall provide",
+        "internal systems",
+        "board",
+        "audit",
+        "policy",
+        "complaint",
+        "customer service",
+    ]
+
+    if any(term in text for term in high_terms):
+        return 35.0
+
+    if any(term in text for term in medium_terms):
+        return 20.0
+
+    return 8.0
 def compute_mpi_score(
     penalty_exposure: PenaltyInput,
     deadline: DeadlineInput,
@@ -240,12 +294,14 @@ def compute_mpi_score(
     urgency_component    = deadline_urgency * 0.2
     authority_component  = float(authority_weight)
     recurrence_component = recurrence_risk * 2.0
-
+    
+    content_risk_component = infer_content_risk_score(obligation_text)
     mpi_raw = (
         penalty_component
         + urgency_component
         + authority_component
         + recurrence_component
+        + content_risk_component
     )
     mpi_score = min(round(mpi_raw, 2), 100.0)
 
@@ -264,6 +320,7 @@ def compute_mpi_score(
         f"Deadline urgency {deadline_urgency:.1f} × 0.2 = {urgency_component:.1f}; "
         f"Authority weight = {authority_component:.0f}; "
         f"Recurrence risk {recurrence_risk:.0f} × 2 = {recurrence_component:.0f}; "
+        f"Content risk = {content_risk_component:.1f}; "
         f"MPI = {mpi_score}."
     )
 
