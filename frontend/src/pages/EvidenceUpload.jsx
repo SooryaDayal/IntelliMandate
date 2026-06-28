@@ -21,8 +21,13 @@ const GATE_DEFS = [
 function GateRow({ no, name, status, reason }) {
   const statusStyles = {
     PASSED: { icon: '✓', color: 'text-[#00FF88]' },
+    PASSED_AUTO_CLOSE: { icon: '✓', color: 'text-[#00FF88]' },
+    HUMAN_REVIEW: { icon: '⚠', color: 'text-[#FFA500]' },
     REVIEW: { icon: '⚠', color: 'text-[#FFA500]' },
     FAILED: { icon: '✕', color: 'text-[#FFA500]' },
+    REJECTED: { icon: '✕', color: 'text-[#FFA500]' },
+    BREACHED: { icon: '✕', color: 'text-[#FFA500]' },
+    UNKNOWN: { icon: '⟳', color: 'text-[#8B8B93]' },
   }
   const { icon, color } = statusStyles[status] || { icon: '⟳', color: 'text-[#8B8B93]' }
   return (
@@ -37,6 +42,46 @@ function GateRow({ no, name, status, reason }) {
       </span>
     </div>
   )
+}
+
+function normalizeGateResults(raw) {
+  const gates = Array.isArray(raw) ? raw : []
+
+  const byName = {}
+  for (const g of gates) {
+    const name = String(g.gate || '').toLowerCase()
+
+    if (name.includes('deadline')) {
+      byName.gate_1_deadline = {
+        status: g.status || 'UNKNOWN',
+        reason: g.reason || `Deadline: ${g.deadline || 'Not specified'}`,
+      }
+    }
+
+    if (name.includes('integrity')) {
+      byName.gate_2_integrity = {
+        status: g.status || 'UNKNOWN',
+        reason: g.reason || `SHA-256: ${(g.evidence_file_hash || '').slice(0, 24)}...`,
+      }
+    }
+
+    if (name.includes('temporal')) {
+      byName.gate_3_temporal = {
+        status: g.status || 'UNKNOWN',
+        reason: g.reason || 'Temporal validation completed.',
+      }
+    }
+
+    if (name.includes('semantic')) {
+      byName.gate_4_semantic = {
+        status: g.status || 'UNKNOWN',
+        reason: g.reason || `Semantic score: ${g.semantic_score ?? 'N/A'}`,
+        score: g.semantic_score,
+      }
+    }
+  }
+
+  return byName
 }
 
 export default function EvidenceUpload() {
@@ -145,12 +190,22 @@ export default function EvidenceUpload() {
         await new Promise((r) => setTimeout(r, 3000))
         continue
       }
+      const gr = normalizeGateResults(vdata.gate_results || [])
+      setGateResults((g) => ({
+                    ...g,
+                    ...gr,
+                    gate_2_integrity: gr.gate_2_integrity || g.gate_2_integrity,
+                }))
 
-      const gr = vdata.gate_results || {}
-      setGateResults((g) => ({ ...g, ...gr, gate_2_integrity: gr.gate_2_integrity || g.gate_2_integrity }))
+      const status = (
+                    vdata.status ||
+                    vdata.map_status ||
+                    vdata.final_status ||
+                    ''
+               ).toUpperCase()
 
-      const status = (vdata.status || vdata.map_status || '').toUpperCase()
       const allFourPresent = GATE_DEFS.every((gd) => gr[gd.key])
+
       if (allFourPresent || ['CLOSED', 'REVIEW', 'FAILED', 'RESUBMIT'].includes(status)) {
         final = vdata
         break
@@ -167,8 +222,25 @@ export default function EvidenceUpload() {
   }
 
   const wing = detail?.wing_responsible || detail?.wing || '—'
-  const outcome = (finalCert?.status || finalCert?.map_status || '').toUpperCase()
-  const g4 = finalCert?.gate_results?.gate_4_semantic || {}
+  const outcome = (
+          finalCert?.status ||
+          finalCert?.map_status ||
+          finalCert?.final_status ||
+          ''
+      ).toUpperCase()
+
+  const g4 = gateResults?.gate_4_semantic || {}
+  const semanticStatus = (g4?.status || '').toUpperCase()
+
+  const isAutoClosed =
+           outcome === 'CLOSED' ||
+           outcome === 'AUTO_CLOSED' ||
+           semanticStatus === 'PASSED_AUTO_CLOSE'
+
+  const isReview =
+           outcome === 'REVIEW' ||
+           outcome === 'REVIEW_REQUIRED' ||
+           semanticStatus === 'HUMAN_REVIEW'
 
   return (
     <div className="fade-in pb-10 max-w-[1400px] mx-auto font-sans">
@@ -283,7 +355,7 @@ export default function EvidenceUpload() {
 
           {finalCert && (
             <>
-              {outcome === 'CLOSED' && (
+              {isAutoClosed && (
                 <div className="bg-[#0A0A0A] rounded-[24px] p-6 text-center mt-2">
                   <div className="text-2xl mb-2 text-[#00FF88]">✓</div>
                   <div className="font-bold text-[#00FF88] text-lg font-sans">
@@ -294,7 +366,7 @@ export default function EvidenceUpload() {
                   </div>
                 </div>
               )}
-              {outcome === 'REVIEW' && (
+              {!isAutoClosed && isReview && (
                 <div className="bg-[#0A0A0A] rounded-[24px] p-6 text-center mt-2">
                   <div className="text-2xl mb-2 text-[#FFA500]">⚠</div>
                   <div className="font-bold text-[#FFA500] text-lg font-sans">
@@ -307,7 +379,7 @@ export default function EvidenceUpload() {
                   </div>
                 </div>
               )}
-              {outcome !== 'CLOSED' && outcome !== 'REVIEW' && (
+              {!isAutoClosed && !isReview && (
                 <div className="bg-[#0A0A0A] rounded-[24px] p-6 text-center mt-2">
                   <div className="text-2xl mb-2 text-[#FFA500]">✕</div>
                   <div className="font-bold text-[#FFA500] text-lg font-sans">

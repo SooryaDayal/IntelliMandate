@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 from datetime import date, datetime
 from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
@@ -389,6 +390,15 @@ async def upload_evidence(
     )
 
     db.add(evidence)
+    db.flush()  # ensures evidence.id is available before saving file
+
+    # Save uploaded evidence file locally for validation engine
+    upload_dir = Path("backend/uploads/evidence")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_filename = file.filename.replace("/", "_").replace("\\", "_")
+    saved_path = upload_dir / f"{evidence.id}_{safe_filename}"
+    saved_path.write_bytes(file_bytes)
 
     # Update MAP status to show evidence is under review
     m.status = "PENDING_EVIDENCE"
