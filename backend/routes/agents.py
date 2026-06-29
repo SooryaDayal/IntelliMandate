@@ -8,6 +8,7 @@ validation, and graph impact analysis.
 """
 
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -333,17 +334,66 @@ def validate_evidence_submission(
 
     try:
         from agents.validation_engine import validate_evidence
+
+        upload_dir = Path("backend/uploads/evidence")
+        matches = list(upload_dir.glob(f"{evidence.id}_*"))
+
+        file_bytes = b""
+        evidence_text = ""
+
+        if matches:
+            file_path = matches[0]
+            file_bytes = file_path.read_bytes()
+
+            if file_path.suffix.lower() in [".txt", ".csv", ".md", ".json"]:
+                evidence_text = file_bytes.decode("utf-8", errors="ignore")
+
         result = validate_evidence(
-            evidence_id   = evidence_id,
-            evidence_text = "",
-            file_bytes    = b"",
-            db            = db,
+            evidence_id=evidence_id,
+            evidence_text=evidence_text,
+            file_bytes=file_bytes,
+            db=db,
         )
+
+        gate_results = result.get("gate_results", []) or []
+
+        for gate in gate_results:
+            gate_name = str(gate.get("gate", "")).lower()
+            status = gate.get("status", "UNKNOWN")
+
+            if "deadline" in gate_name:
+                evidence.gate_1_status = status
+            elif "integrity" in gate_name:
+                evidence.gate_2_status = status
+            elif "temporal" in gate_name:
+                evidence.gate_3_status = status
+            elif "semantic" in gate_name:
+                evidence.gate_4_status = status
+                evidence.semantic_score = gate.get("semantic_score")
+
+        final_status = str(result.get("final_status", "COMPLETED")).upper()
+
+        # DB column is varchar(20), so keep stored status short
+        if final_status == "AUTO_CLOSED":
+            evidence.gate_status = "CLOSED"
+        elif final_status in ["REVIEW_REQUIRED", "HUMAN_REVIEW"]:
+            evidence.gate_status = "REVIEW"
+        elif final_status in ["REJECTED_OR_ESCALATED", "REJECTED"]:
+            evidence.gate_status = "REJECTED"
+        else:
+            evidence.gate_status = final_status[:20]
+
+        if evidence.gate_4_status in ["PASSED_AUTO_CLOSE", "PASSED", "REVIEW_REQUIRED", "HUMAN_REVIEW"]:
+            evidence.failure_reason = None
+        else:
+            evidence.failure_reason = "Evidence failed semantic validation."
+
+        db.commit()
         return result
+
     except ImportError:
-        # Validation engine not built yet
         return {
-            "evidence_id":    evidence_id,
+            "evidence_id": evidence_id,
             "overall_status": "PENDING",
             "note": (
                 "Validation engine not built yet. "
