@@ -282,7 +282,7 @@ intellimandate/
 
 ```bash
 git clone https://github.com/SooryaDayal/IntelliMandate.git
-cd IntelliMandate
+cd intellimandate
 ```
 
 ## 2. Install dependencies
