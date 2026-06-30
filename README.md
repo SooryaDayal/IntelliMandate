@@ -302,7 +302,11 @@ python -m spacy download en_core_web_trf
 
 Create a PostgreSQL database and update your environment variables or configuration.
 
-## 5. Start the backend
+## 5. Start Redis (required for background orchestration tasks).
+
+redis-server
+
+## 6. Start the backend
 
 ```bash
 uvicorn backend.main:app --reload
