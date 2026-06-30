@@ -213,7 +213,7 @@ Supported inputs:
 | Component                | Technology            |
 | ------------------------ | --------------------- |
 | Backend                  | FastAPI               |
-| Frontend                 | Streamlit             |
+| Frontend                 | React             |
 | Database                 | PostgreSQL            |
 | Background Tasks         | Celery                |
 | Cache                    | Redis                 |
