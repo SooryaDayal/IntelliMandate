@@ -562,3 +562,33 @@ def get_agent_status():
 @router.get("/agents/orchestration/status")
 def get_orchestration_status():
     return agent_state["orchestration"]
+
+@router.delete("/admin/clear-all")
+def clear_all_data(db: Session = Depends(get_db)):
+    """
+    Wipes all mandates, maps, assignments, evidence, and
+    audit log entries. Use to reset the demo before a fresh run.
+    """
+    deleted_audit  = db.query(AuditLog).delete()
+    deleted_evid   = db.query(Evidence).delete()
+    deleted_assign = db.query(Assignment).delete()
+    deleted_maps   = db.query(Map).delete()
+    deleted_mand   = db.query(Mandate).delete()
+    db.commit()
+
+    print(
+        f"[Admin] Cleared: {deleted_mand} mandates, {deleted_maps} maps, "
+        f"{deleted_assign} assignments, {deleted_evid} evidence, "
+        f"{deleted_audit} audit entries."
+    )
+
+    return {
+        "message": "All data cleared.",
+        "deleted": {
+            "mandates":    deleted_mand,
+            "maps":        deleted_maps,
+            "assignments": deleted_assign,
+            "evidence":    deleted_evid,
+            "audit_log":   deleted_audit,
+        }
+    }

@@ -115,4 +115,10 @@ export async function sha256Hex(arrayBuffer) {
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+export async function clearAllData() {
+  const res = await fetch(`${API_BASE}/admin/clear-all`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 export default client

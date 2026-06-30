@@ -144,7 +144,7 @@ def find_first_lod_wing(obligation_text: str) -> tuple[str, str]:
             return wing, domain
 
     # Default fallback
-    return "Compliance Wing", "General Compliance"
+    return "Operations Wing", "General Operations"
 
 
 # ============================================================
@@ -244,10 +244,14 @@ def route_map(
         else "As per regulation"
     )
 
-    # Find 1st LoD Wing from obligation text
     first_wing, domain_matched = find_first_lod_wing(
         map_obj.obligation_text or ""
     )
+
+    # Safety check — 1st LoD must never equal 2nd LoD (Compliance Wing)
+    if first_wing == SECOND_LOD_WING:
+        first_wing = "Operations Wing"
+        domain_matched = "General Operations (reassigned)"
 
     print(
         f"[Routing Engine] MAP {map_id[:8]}... "
@@ -283,7 +287,7 @@ def route_map(
     assignments_data = [
         {
             "line_number":     1,
-            "role":            f"{first_wing} Owner",
+            "role":            f"{first_wing} Officer",
             "wing":            first_wing,
             "assignment_text": text_line1,
         },

@@ -236,6 +236,14 @@ def get_maps(
                 "id": str(m.id),
                 "mandate_id": str(m.mandate_id),
                 "obligation_text": m.obligation_text,
+                "mandate_title": db.query(Mandate)
+                                   .filter(Mandate.id == m.mandate_id)
+                                   .first().title if m.mandate_id else None,
+
+                "mandate_source": db.query(Mandate)
+                                    .filter(Mandate.id == m.mandate_id)
+                                    .first().source if m.mandate_id else None,
+
                 "measurable_condition": m.measurable_condition,
                 "deadline": str(m.deadline) if m.deadline else None,
                 "penalty_exposure": float(m.penalty_exposure),
@@ -313,6 +321,8 @@ def get_map(
         "assignments": [
             {
                 "id": str(a.id),
+                "mandate_id":    str(m.mandate_id) if m.mandate_id else None,
+                "mandate_title": mandate.title if mandate else None,
                 "line_number": a.line_number,
                 "role": a.role,
                 "department": a.department,
@@ -365,57 +375,60 @@ async def upload_evidence(
         raise HTTPException(status_code=404, detail="MAP not found.")
 
     if m.status == "CLOSED":
-        raise HTTPException(
-            status_code=400,
-            detail="This MAP is already closed. No further evidence required."
-        )
+        raise HTTPException(status_code=400, detail="This MAP is already closed.")
 
-    # Read file bytes and compute SHA-256 hash (Gate 2)
-    import hashlib
     file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file uploaded.")
+
+    import hashlib
     file_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    # Store evidence record with PENDING gates
-    # Member B's Validation Agent will process the gates asynchronously
+    # Extract text from evidence document
+    evidence_text = ""
+    if file.filename.lower().endswith(".pdf"):
+        try:
+            import fitz
+            import io
+            doc = fitz.open(stream=io.BytesIO(file_bytes), filetype="pdf")
+            evidence_text = "\n".join(p.get_text("text") for p in doc)
+            doc.close()
+        except Exception as e:
+            print(f"[Evidence] PDF extraction error: {e}")
+    else:
+        try:
+            evidence_text = file_bytes.decode("utf-8", errors="ignore")
+        except Exception:
+            evidence_text = ""
+
+    # Create evidence record
     evidence = Evidence(
-        map_id=map_uuid,
-        file_name=file.filename,
-        file_hash=file_hash,
-        gate_1_status="PENDING",
-        gate_2_status="PASSED",
-        # Gate 2 passes immediately — hash computed above
-        gate_3_status="PENDING",
-        gate_4_status="PENDING",
-        gate_status="PENDING"
+        map_id      = map_uuid,
+        file_name   = file.filename,
+        file_hash   = file_hash,
+        gate_status = "PENDING",
     )
-
     db.add(evidence)
-    db.flush()  # ensures evidence.id is available before saving file
-
-    # Save uploaded evidence file locally for validation engine
-    upload_dir = Path("backend/uploads/evidence")
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    safe_filename = file.filename.replace("/", "_").replace("\\", "_")
-    saved_path = upload_dir / f"{evidence.id}_{safe_filename}"
-    saved_path.write_bytes(file_bytes)
-
-    # Update MAP status to show evidence is under review
-    m.status = "PENDING_EVIDENCE"
     db.commit()
     db.refresh(evidence)
 
-    return {
-        "message": "Evidence uploaded successfully. Validation gates running.",
-        "evidence_id": str(evidence.id),
-        "map_id": map_id,
-        "file_name": file.filename,
-        "file_hash": file_hash,
-        "gate_2_status": "PASSED",
-        "gates_pending": ["gate_1", "gate_3", "gate_4"],
-        "note": "Full validation results will be available once the Validation Agent completes processing."
-    }
+    # Run all four gates synchronously — using the REAL extracted text
+    from agents.validation_engine import validate_evidence
+    result = validate_evidence(
+        evidence_id   = str(evidence.id),
+        evidence_text = evidence_text,
+        file_bytes    = file_bytes,
+        db            = db,
+    )
 
+    return {
+        "message":       "Evidence uploaded and validated.",
+        "evidence_id":   str(evidence.id),
+        "map_id":        map_id,
+        "file_name":     file.filename,
+        "file_hash":     file_hash,
+        **result,
+    }
 
 # ============================================================
 # ROUTE 6: GET /audit

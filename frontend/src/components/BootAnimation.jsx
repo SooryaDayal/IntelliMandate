@@ -49,8 +49,8 @@ export default function BootAnimation({ onComplete }) {
       setTimeout(() => setStage('fragment'), 1650),
       setTimeout(() => setStage('route'), 2300),
       setTimeout(() => setStage('resolve'), 3700),
-      setTimeout(() => setStage('exit'), 5600),
-      setTimeout(() => onComplete(), 6200),
+      setTimeout(() => setStage('exit'), 6000),
+      setTimeout(() => onComplete(), 6600),
     ]
     return () => timers.forEach(clearTimeout)
   }, [onComplete])

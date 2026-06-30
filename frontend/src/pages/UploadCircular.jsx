@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Upload, FolderOpen, CheckCircle2 } from 'lucide-react'
 import Badge from '../components/Badge'
-import { uploadCircular, triggerOrchestrate, triggerOfflineLoad } from '../lib/api'
+import { uploadCircular, triggerOfflineLoad } from '../lib/api'
 import { formatINR } from '../lib/format'
 
 const STEP_LABELS = [
@@ -59,31 +59,27 @@ export default function UploadCircular() {
       setActiveStep(3)
       await sleep(400)
 
-      const mandateId = uploadResult.mandate_id || uploadResult.id
-      let finalResult = uploadResult
+      const reasoningLog = uploadResult.reasoning_log || []
 
-      if (mandateId) {
-        let orchResult = uploadResult
-        try {
-          orchResult = await triggerOrchestrate(mandateId)
-        } catch {
-          // backend may already run orchestrator on upload
-        }
+for (const entry of reasoningLog) {
+  appendLog(String(entry))
+  await sleep(120)
+}
 
-        const reasoningLog = orchResult.reasoning_log || []
-        for (const entry of reasoningLog) {
-          appendLog(String(entry))
-          await sleep(120)
-        }
-        if (reasoningLog.length === 0) {
-          appendLog('Orchestrator run complete — no detailed log returned')
-        }
-        finalResult = orchResult
-      }
+if (reasoningLog.length === 0) {
+  appendLog('Orchestrator run complete — no detailed log returned')
+}
 
-      setCompleted([1, 2, 3, 4])
-      setActiveStep(4)
-      setResult(finalResult)
+setCompleted([1, 2, 3, 4])
+setActiveStep(4)
+
+setResult({
+  mapsCreated: uploadResult.maps_created || 0,
+  highestPriority: uploadResult.highest_priority || null,
+  totalExposure: uploadResult.total_exposure || 0,
+  wingsAssigned: uploadResult.wings_assigned || [],
+  signalType: uploadResult.signal_type || 'UNKNOWN',
+})
     } catch (e) {
       setError(e.message)
     } finally {
@@ -100,7 +96,12 @@ export default function UploadCircular() {
     }
   }
 
-  const highestTier = result?.critical_maps > 0 ? 'CRITICAL' : result?.maps_created > 0 ? 'HIGH' : '—'
+  const mapCount = result?.mapsCreated ?? result?.maps_created ?? 0
+
+  const highestTier =
+    mapCount > 0
+      ? (result?.highestPriority || result?.highest_priority || 'HIGH')
+      : '—'
 
   return (
     <div className="fade-in pb-10 max-w-[1400px] mx-auto font-sans">
@@ -214,7 +215,7 @@ export default function UploadCircular() {
               <div>
                 <p className="text-sm font-medium text-[#8B8B93] mb-1">MAPs created</p>
                 <p className="text-3xl font-bold text-white font-sans">
-                  {result.maps_created ?? 0}
+                  {result.mapsCreated ?? result.maps_created ?? 0}
                 </p>
               </div>
               <div>
@@ -226,13 +227,20 @@ export default function UploadCircular() {
               <div>
                 <p className="text-sm font-medium text-[#8B8B93] mb-1">Total exposure</p>
                 <p className="text-3xl font-bold text-white font-sans">
-                  {formatINR(result.total_penalty_exposure || 0)}
+                  {formatINR(result.totalExposure ?? result.total_exposure ?? 0)}
                 </p>
               </div>
             </div>
             <p className="text-sm text-[#8B8B93] font-sans">
-              Wings assigned: {(result.wings_assigned || []).join(' · ') || '—'}
+              Wings assigned: {(result.wingsAssigned || result.wings_assigned || []).join(' · ') || '—'}
             </p>
+            {(result.mapsCreated ?? result.maps_created ?? 0) === 0 && (
+              <div className="mt-4 px-4 py-3 rounded-[12px] bg-[#1A1100] text-[#FFA500] text-sm">
+                No enforceable obligations were extracted. This circular was classified as{' '}
+                <span className="font-semibold">{result.signalType || 'ADVISORY'}</span> — informational
+                or guidance content, not a binding mandatory requirement. No MAPs are generated for advisory circulars.
+              </div>
+            )}
           </div>
           <button
             onClick={() => navigate('/')}

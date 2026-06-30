@@ -38,6 +38,17 @@ export default function MapDetail() {
   const { mapId } = useParams()
   const navigate = useNavigate()
   const [mapsList, setMapsList] = useState([])
+
+  const groupedMaps = useMemo(() => {
+  const groups = {}
+  mapsList.forEach((mp) => {
+    const key = mp.mandate_title || 'Unclassified Circular'
+    if (!groups[key]) groups[key] = []
+    groups[key].push(mp)
+  })
+  return groups
+}, [mapsList])
+
   const [detail, setDetail] = useState(null)
   const [assignments, setAssignments] = useState([])
   const [error, setError] = useState(null)
@@ -136,16 +147,16 @@ export default function MapDetail() {
   ]
 
   async function loadImpact() {
-    const mandateId = m.mandate_id || m.source_mandate_id
-    if (!mandateId) return
-    setShowImpact(true)
-    try {
-      const data = await fetchGraphImpact(mandateId)
-      setImpact(data)
-    } catch (e) {
-      setImpact({ error: e.message })
-    }
+  const mandateId = m.mandate_id || m.mandate?.id
+  if (!mandateId) return
+  setShowImpact(true)
+  try {
+    const data = await fetchGraphImpact(mandateId)
+    setImpact(data)
+  } catch (e) {
+    setImpact({ error: e.message })
   }
+}
 
   return (
     <div className="fade-in pb-10 max-w-[1400px] mx-auto font-sans">
@@ -164,16 +175,20 @@ export default function MapDetail() {
       <div className="bg-[#0A0A0A] rounded-[24px] p-6 mb-6">
         <p className="text-sm font-medium text-[#8B8B93] mb-3">Select MAP</p>
         <select
-          value={resolvedId || ''}
-          onChange={(e) => navigate(`/map/${e.target.value}`)}
-          className="w-full px-4 py-2.5 rounded-[12px] text-sm font-sans bg-[#1A1A1A] text-white outline-none"
-        >
-          {mapsList.map((mp) => (
-            <option key={mp.id || mp.map_id} value={mp.id || mp.map_id}>
-              {mp.id || mp.map_id}
-            </option>
-          ))}
-        </select>
+  value={resolvedId || ''}
+  onChange={(e) => navigate(`/map/${e.target.value}`)}
+  className="w-full px-4 py-2.5 rounded-[12px] text-sm font-sans bg-[#1A1A1A] text-white outline-none"
+>
+  {Object.entries(groupedMaps).map(([title, maps]) => (
+    <optgroup key={title} label={title.slice(0, 70)}>
+      {maps.map((mp) => (
+        <option key={mp.id || mp.map_id} value={mp.id || mp.map_id}>
+          {(mp.obligation_text || '').slice(0, 55)}...
+        </option>
+      ))}
+    </optgroup>
+  ))}
+</select>
       </div>
 
       {loading ? (
@@ -187,6 +202,12 @@ export default function MapDetail() {
             <div>
               <p className="text-sm font-medium text-[#8B8B93] mb-3">Obligation</p>
               <div className="bg-[#0A0A0A] rounded-[24px] p-6 text-sm text-white leading-relaxed font-sans border-l-2 border-[#00C6FF]">
+                {m.mandate_title && (
+                  <p className="text-xs text-[#8B8B93] mb-2 font-sans">
+                    From circular: <span className="text-[#00C6FF]">{m.mandate_title}</span>
+                  </p>
+                )}
+                
                 {m.obligation_text || '—'}
               </div>
             </div>
@@ -264,7 +285,7 @@ export default function MapDetail() {
                 <UploadCloud size={14} />
                 Upload Evidence
               </button>
-              {(m.mandate_id || m.source_mandate_id) && (
+              {(m.mandate_id || m.mandate?.id) && (
                 <button
                   onClick={loadImpact}
                   className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-full text-sm font-semibold text-white bg-[#1A1A1A] hover:bg-[#2A2A2A] transition-colors"
@@ -288,7 +309,7 @@ export default function MapDetail() {
                     <p className="text-sm font-medium text-[#8B8B93] mb-3">{lodMeta[i]?.label || `Line ${i + 1}`}</p>
                     <p className="text-white font-semibold text-sm mb-1 font-sans">{a.wing || '—'}</p>
                     <p className="text-sm text-[#8B8B93] mb-3 font-sans">{a.role}</p>
-                    <p className="text-sm text-[#8B8B93] leading-relaxed font-sans">{truncate(a.assignment_text, 160)}</p>
+                    <p className="text-sm text-[#8B8B93] leading-relaxed font-sans whitespace-pre-line">{a.assignment_text}</p>
                   </div>
                 ))
               : [
