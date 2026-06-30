@@ -353,7 +353,7 @@ npm run dev
 
 **Frontend Lead**
 
-* Streamlit Dashboard
+* React Dashboard
 * Upload Workflow
 * Evidence Validation UI
 * Audit Trail
