@@ -32,30 +32,6 @@ except OSError:
         "spaCy model not found. Run: python -m spacy download en_core_web_sm"
     )
 
-
-# ============================================================
-# OBLIGATION KEYWORDS
-# Sentences containing these words are likely obligations
-# ============================================================
-
-OBLIGATION_TRIGGERS = [
-    "shall", "must", "required to", "are required",
-    "is required", "should", "will ensure", "shall ensure",
-    "mandated", "obligated", "comply", "compliance",
-    "submit", "maintain", "report", "upload", "implement",
-    "achieve", "ensure", "adhere", "follow", "furnish",
-    "provide", "disclose", "notify", "rectify", "update",
-]
-
-# Sentences with these words are likely informational — skip them
-SKIP_TRIGGERS = [
-    "it is clarified", "it may be noted", "it is observed",
-    "this circular", "dated", "reference is invited",
-    "as you are aware", "it is informed", "is pleased to",
-    "with a view to", "background", "preamble",
-    "in this regard", "it may be recalled",
-]
-
 # ============================================================
 # MONEY EXTRACTION
 # Converts strings like ₹1 crore, Rs.25 lakh to float
@@ -320,25 +296,200 @@ def split_into_sentences(text: str) -> list[str]:
 # OBLIGATION SENTENCE DETECTOR
 # ============================================================
 
+# ============================================================
+# STAGE 1: FAST KEYWORD FILTER (existing, keep as is)
+# Quick elimination of obviously non-obligation sentences
+# ============================================================
+
+HARD_SKIP = [
+    "it is clarified", "it may be noted", "it is observed",
+    "this circular", "dated", "reference is invited",
+    "as you are aware", "it is informed", "is pleased to",
+    "with a view to", "background", "preamble",
+    "in this regard", "it may be recalled",
+    "the reserve bank", "rbi has decided", "rbi hereby",
+    "attention of", "attention is invited",
+    "questions may be", "the circular is available",
+    "master direction", "this direction", "these directions",
+    "in exercise of", "in pursuance of",
+]
+
+OBLIGATION_TRIGGERS = [
+    "shall", "must", "required to", "are required",
+    "is required", "should ensure", "will ensure",
+    "shall ensure", "mandated", "obligated",
+    "shall comply", "shall submit", "shall maintain",
+    "shall report", "shall upload", "shall implement",
+    "shall achieve", "shall ensure", "shall adhere",
+    "shall furnish", "shall provide", "shall disclose",
+    "shall notify", "shall rectify", "shall update",
+    "must submit", "must maintain", "must report",
+    "are required to", "is required to",
+    "shall be substituted", "shall be inserted",
+    "shall read as", "is amended to",
+]
+
+
+# ============================================================
+# STAGE 2: DEPENDENCY PARSE VALIDATION
+# Verifies the sentence actually has an obligated subject
+# acting on a verb — not just containing the word "shall"
+# ============================================================
+
+REGULATED_ENTITIES = {
+    "bank", "banks", "re", "regulated entity",
+    "regulated entities", "nbfc", "nbfcs",
+    "institution", "institutions", "branch", "branches",
+    "licensee", "licensees", "applicant",
+}
+
+def has_regulated_subject(sentence: str) -> bool:
+    """
+    Uses spaCy dependency parse to verify the sentence
+    has a regulated entity as the subject of an obligation verb.
+    Eliminates false positives where "shall" appears in
+    a definition or explanatory clause.
+    """
+    doc = nlp(sentence)
+
+    for token in doc:
+        # Look for modal verbs (shall, must, should, will)
+        if token.dep_ == "aux" and token.text.lower() in (
+            "shall", "must", "should", "will", "may"
+        ):
+            # Find the root verb this modal modifies
+            head = token.head
+            # Find the subject of that verb
+            for child in head.children:
+                if child.dep_ in ("nsubj", "nsubjpass"):
+                    subject_text = child.text.lower()
+                    # Check if subject is a regulated entity
+                    for entity in REGULATED_ENTITIES:
+                        if entity in subject_text:
+                            return True
+                    # Also check compound subjects
+                    for subchild in child.children:
+                        if subchild.dep_ == "compound":
+                            if any(e in subchild.text.lower()
+                                   for e in REGULATED_ENTITIES):
+                                return True
+
+    return False
+
+
+# ============================================================
+# STAGE 3: QUALITY SCORING
+# Eliminates low-quality extractions before they become MAPs
+# ============================================================
+
+def quality_score(sentence: str) -> float:
+    """
+    Scores a candidate obligation sentence from 0.0 to 1.0.
+    Sentences below 0.4 are discarded.
+
+    High score signals:
+      - Contains specific deadline (date or timeframe)
+      - Contains specific action verb
+      - Contains specific subject (branch, account, customer)
+      - References a clause or section
+      - Contains a measurable quantity (%, number, amount)
+
+    Low score signals:
+      - Very generic ("shall comply with all directions")
+      - No specific action
+      - Appears to be a header or label
+      - Contains formatting artifacts
+    """
+    score = 0.5  # Base score
+    text_lower = sentence.lower()
+
+    # Boost: specific deadline mentioned
+    if any(w in text_lower for w in [
+        "within", "by", "before", "days", "weeks", "months",
+        "quarterly", "annually", "fortnightly", "immediately"
+    ]):
+        score += 0.15
+
+    # Boost: specific quantity or percentage
+    if any(c.isdigit() for c in sentence) or "%" in sentence:
+        score += 0.15
+
+    # Boost: specific regulatory reference
+    if any(w in text_lower for w in ["clause", "section", "paragraph", "rule", "schedule"]):
+        score += 0.10
+
+    # Boost: specific subject matter
+    if any(w in text_lower for w in [
+        "kyc", "aml", "crr", "slr", "npa", "ckycr",
+        "priority sector", "interest rate", "grievance",
+        "cyber", "fema", "bsbda", "capital"
+    ]):
+        score += 0.15
+
+    # Penalty: very short (likely a header)
+    if len(sentence) < 50:
+        score -= 0.3
+
+    # Penalty: contains list markers
+    if re.search(r"^\s*[a-z]\)", text_lower) or text_lower.strip().startswith("•"):
+        score -= 0.2
+
+    # Penalty: likely a definition not an obligation
+    if any(w in text_lower for w in [
+        "means", "includes", "refers to", "defined as",
+        "for the purpose of", "for this purpose"
+    ]):
+        score -= 0.25
+
+    # Penalty: talks about RBI acting, not the bank
+    if any(w in text_lower for w in [
+        "reserve bank may", "rbi may", "reserve bank shall",
+        "rbi shall", "reserve bank has", "rbi has",
+        "reserve bank will", "rbi will"
+    ]):
+        score -= 0.4
+
+    # Penalty: pure amendment substitution language with no action
+    if "substituted" in text_lower and "shall" not in text_lower:
+        score -= 0.2
+
+    return min(max(score, 0.0), 1.0)
+
+
+# ============================================================
+# UPDATED is_obligation_sentence using all three stages
+# ============================================================
+
+QUALITY_THRESHOLD = 0.45
+
 def is_obligation_sentence(sentence: str) -> bool:
     """
-    Returns True if the sentence likely contains
-    a compliance obligation.
-    Uses keyword matching — fast and reliable.
+    Three-stage filter:
+    Stage 1 — Keyword filter (fast)
+    Stage 2 — Dependency parse validation (accurate)
+    Stage 3 — Quality score threshold (clean)
     """
     sent_lower = sentence.lower()
 
-    # Skip sentences with informational markers
-    for skip in SKIP_TRIGGERS:
+    # Stage 1a: Hard skip
+    for skip in HARD_SKIP:
         if skip in sent_lower:
             return False
 
-    # Accept sentences with obligation markers
-    for trigger in OBLIGATION_TRIGGERS:
-        if trigger in sent_lower:
-            return True
+    # Stage 1b: Must contain obligation trigger
+    has_trigger = any(trigger in sent_lower for trigger in OBLIGATION_TRIGGERS)
+    if not has_trigger:
+        return False
 
-    return False
+    # Stage 2: Dependency parse — must have regulated subject
+    if not has_regulated_subject(sentence):
+        return False
+
+    # Stage 3: Quality score threshold
+    if quality_score(sentence) < QUALITY_THRESHOLD:
+        return False
+
+    return True
 
 
 # ============================================================
@@ -466,7 +617,19 @@ def extract_maps_from_mandate(
 
     created_ids = []
 
+     # Fetch existing obligation texts for this mandate to prevent duplicates
+    existing_obligations = {
+        m.obligation_text.strip().lower()
+        for m in db.query(Map).filter(Map.mandate_id == mandate_uuid).all()
+    }
+
     for raw_map in raw_maps:
+        normalized = raw_map["obligation_text"].strip().lower()
+        if normalized in existing_obligations:
+            print(f"[Extraction] Skipping duplicate: {raw_map['obligation_text'][:50]}...")
+            continue
+        existing_obligations.add(normalized)
+        
         mpi_result = compute_mpi_score(
             penalty_exposure = raw_map["penalty_exposure"],
             deadline         = raw_map["deadline"],

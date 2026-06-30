@@ -27,6 +27,8 @@ from backend.scrapers.offline_ingestion import (
          load_demo_data, ingest_pdf_bytes, ingest_zip_file
      )
 from fastapi import UploadFile, File, Form
+from backend.models import Mandate, Map
+
 
 # Scraper components
 from backend.scrapers.rbi_scraper   import fetch_rbi_circulars
@@ -518,20 +520,23 @@ def get_scrape_history(
         "limit":  limit,
         "offset": offset,
         "mandates": [
-            {
-                "id":            str(m.id),
-                "source":        m.source,
-                "signal_type":   m.signal_type,
-                "title":         m.title,
-                "url":           m.url,
-                "date_issued":   str(m.date_issued) if m.date_issued else None,
-                "delta_summary": m.delta_summary,
-                "processed":     m.processed,
-                "has_raw_text":  bool(m.raw_text),
-                "created_at":    str(m.created_at),
-            }
-            for m in mandates
-        ]
+    {
+        "id":            str(m.id),
+        "source":        m.source,
+        "signal_type":   m.signal_type,
+        "title":         m.title,
+        "url":           m.url,
+        "date_issued":   str(m.date_issued) if m.date_issued else None,
+        "delta_summary": m.delta_summary,
+        "processed":     m.processed,
+        "has_raw_text":  bool(m.raw_text),
+        "created_at":    str(m.created_at),
+        "map_count":     db.query(Map).filter(
+                             Map.mandate_id == m.id
+                         ).count(),
+    }
+    for m in mandates
+]
     }
 
 @router.post("/offline")
@@ -630,26 +635,46 @@ async def upload_circular(
     db.commit()
     db.refresh(mandate)
 
-    print(f"[Upload] Mandate stored: {mandate.id} — triggering orchestrator...")
+    print(f"[Upload] Mandate stored: {mandate.id} — running extraction synchronously...")
 
+    map_ids = []
     try:
-        from backend.routes.agents import run_orchestration
-        background_tasks.add_task(
-            run_orchestration,
+        from agents.extraction_agent import extract_maps_from_mandate
+        map_ids = extract_maps_from_mandate(
             mandate_id = str(mandate.id),
             db         = db
         )
-    except ImportError:
-        print("[Upload] Orchestrator not available yet — mandate stored, processing skipped.")
+    except Exception as e:
+        print(f"[Upload] Extraction error: {e}")
+
+    # Fetch the actual created MAPs to compute real summary numbers
+    created_maps = (
+        db.query(Map)
+        .filter(Map.id.in_([uuid.UUID(mid) for mid in map_ids]))
+        .all()
+        if map_ids else []
+    )
+
+    total_exposure = sum(float(m.penalty_exposure or 0) for m in created_maps)
+    priority_order = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+    highest_priority = max(
+        (m.priority_tier for m in created_maps),
+        key=lambda t: priority_order.get(t, 0),
+        default=None
+    )
+    wings_assigned = list({
+        a.department
+        for m in created_maps
+        for a in db.query(Assignment).filter(Assignment.map_id == m.id).all()
+    })
 
     return {
-        "message":     "Circular uploaded and processing started.",
-        "mandate_id":  str(mandate.id),
-        "title":       mandate.title,
-        "signal_type": mandate.signal_type,
-        "poll_url":    "/agents/orchestration/status",
-        "note": (
-            "The ReAct orchestrator is now classifying, extracting "
-            "obligations, scoring MPI, and routing to Canara Bank Wings."
-        )
+        "message":          f"Circular processed. {len(created_maps)} MAPs created.",
+        "mandate_id":       str(mandate.id),
+        "title":            mandate.title,
+        "signal_type":      mandate.signal_type,
+        "maps_created":     len(created_maps),
+        "highest_priority": highest_priority,
+        "total_exposure":   total_exposure,
+        "wings_assigned":   wings_assigned,
     }

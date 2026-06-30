@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { RotateCw, FolderOpen, RefreshCw, Activity, CheckCircle, AlertTriangle } from 'lucide-react'
-import { fetchHistory, fetchScrapeStatus, triggerOnlineScrape, triggerOfflineLoad, triggerOrchestrate } from '../lib/api'
+import { RotateCw, FolderOpen, RefreshCw, Activity, CheckCircle, AlertTriangle, Trash2 } from 'lucide-react'
+import { fetchHistory, fetchScrapeStatus, triggerOnlineScrape, triggerOfflineLoad, triggerOrchestrate, clearAllData } from '../lib/api'
 
 const DEMO_DATA = [
   { id: 'MND001', title: 'Guidelines on KYC Re-verification', date_issued: '2026-06-10', source: 'RBI', signal_type: 'MANDATORY_IMMEDIATE', maps_extracted: 2, processed: true },
@@ -65,6 +65,26 @@ export default function Mandates() {
     } catch (e) { setNotice({ type: 'error', text: `Demo load failed — ${e.message}` }) }
   }
 
+  async function handleClearAll() {
+  if (!window.confirm('This will permanently delete ALL mandates, MAPs, and assignments. Continue?')) return
+
+  try {
+    const result = await clearAllData()
+
+    setNotice({
+      type: 'success',
+      text: `Cleared ${result.deleted.mandates} mandates and ${result.deleted.maps} MAPs.`,
+    })
+
+    load()
+  } catch (e) {
+    setNotice({
+      type: 'error',
+      text: `Clear failed — ${e.message}`,
+    })
+  }
+}
+
   async function handleProcess(mandateId) {
     try {
       setNotice({ type: 'info', text: `Executing ReAct Orchestrator for ${mandateId}...` })
@@ -106,6 +126,12 @@ export default function Mandates() {
         </button>
         <button onClick={handleDemoLoad} className="flex items-center gap-2 px-6 py-3 rounded-full text-sm font-semibold text-white bg-[#1A1A1A] hover:bg-[#2A2A2A] transition-all">
           <FolderOpen size={16} /> Load Local Cache
+        </button>
+        <button
+          onClick={handleClearAll}
+          className="flex items-center gap-2 px-6 py-3 rounded-full text-sm font-semibold text-white bg-[#3A0000] hover:bg-[#4A0000] transition-all"
+        >
+          <Trash2 size={16} /> Clear Database
         </button>
       </div>
 
