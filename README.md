@@ -318,7 +318,7 @@ Backend documentation:
 http://localhost:8000/docs
 ```
 
-## 6. Launch the frontend
+## 7. Launch the frontend
 
 ```bash
 npm run dev
